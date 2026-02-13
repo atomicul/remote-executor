@@ -4,11 +4,22 @@ set -euo pipefail
 HOST="${1:-localhost:9090}"
 SERVICE="dev.executor.common.ShellService"
 
-echo "=== list ==="
-grpcurl -plaintext "$HOST" list
-
 echo "=== StartJob ==="
-grpcurl -plaintext -d '{"command": "echo hello"}' "$HOST" "$SERVICE/StartJob"
+response=$(grpcurl -plaintext -d '{"command": "sleep 2; echo hello"}' "$HOST" "$SERVICE/StartJob")
+echo "$response" | jq .
 
-echo "=== GetJobStatus ==="
-grpcurl -plaintext -d '{"job_id": "nonexistent"}' "$HOST" "$SERVICE/GetJobStatus"
+job_id=$(echo "$response" | jq -r '.job_id')
+echo "Job ID: $job_id"
+
+echo
+echo "=== GetJobStatus (running) ==="
+status=$(grpcurl -plaintext -d "{\"job_id\": \"$job_id\"}" "$HOST" "$SERVICE/GetJobStatus")
+echo "$status" | jq .
+
+echo
+echo "Waiting 3 seconds for container to finish..."
+sleep 3
+
+echo "=== GetJobStatus (completed) ==="
+status=$(grpcurl -plaintext -d "{\"job_id\": \"$job_id\"}" "$HOST" "$SERVICE/GetJobStatus")
+echo "$status" | jq .
