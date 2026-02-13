@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package dev.executor.common;
+
+option java_package = "dev.executor.common";
+option java_multiple_files = true;
+
+service ShellService {
+  rpc StartJob(CommandRequest) returns (JobResponse) {}
+  rpc GetJobStatus(JobIdRequest) returns (JobStatus) {}
+  rpc WatchJobLogs(JobIdRequest) returns (stream LogChunk) {}
+}
+
+message CommandRequest {
+  string command = 1;
+  int32 memory_limit_mb = 2;
+  float cpu_limit = 3;
+  map<string, string> env_vars = 4;
+}
+
+message JobResponse {
+  string job_id = 1;
+}
+
+message JobIdRequest {
+  string job_id = 1;
+}
+
+message JobStatus {
+  string job_id = 1;
+  oneof result {
+    RunningDetails running = 2;
+    CompletionDetails completed = 3;
+    FailureDetails system_error = 4;
+  }
+}
+
+message RunningDetails {
+  string started_at = 1;
+}
+
+message CompletionDetails {
+  int32 exit_code = 1;
+  bool oom_killed = 2;
+  repeated string recent_logs = 3;
+}
+
+message FailureDetails {
+  string reason = 1;
+  string message = 2;
+}
+
+message LogChunk {
+  string content = 1;
+}

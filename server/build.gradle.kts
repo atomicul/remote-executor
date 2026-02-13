@@ -3,9 +3,9 @@ plugins {
 }
 
 dependencies {
-    implementation("io.grpc:grpc-netty-shaded:1.60.0")
-    implementation("io.grpc:grpc-protobuf:1.60.0")
-    implementation("io.grpc:grpc-stub:1.60.0")
+    implementation(project(":common"))
+    implementation("io.grpc:grpc-netty-shaded:1.69.0")
+    implementation("io.grpc:grpc-services:1.69.0")
     implementation("com.github.docker-java:docker-java:3.3.4")
     implementation("com.github.docker-java:docker-java-transport-httpclient5:3.3.4")
 
