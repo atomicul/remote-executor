@@ -13,3 +13,6 @@ build/
 *.ipr
 *.iws
 .vscode/
+.classpath
+.project
+.settings/
