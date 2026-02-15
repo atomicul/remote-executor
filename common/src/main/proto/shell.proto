@@ -9,6 +9,7 @@ service ShellService {
   rpc StartJob(CommandRequest) returns (JobResponse) {}
   rpc GetJobStatus(JobIdRequest) returns (JobStatus) {}
   rpc WatchJobLogs(JobIdRequest) returns (stream LogChunk) {}
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {}
 }
 
 message CommandRequest {
@@ -52,4 +53,10 @@ message FailureDetails {
 
 message LogChunk {
   string content = 1;
+}
+
+message ListJobsRequest {}
+
+message ListJobsResponse {
+  repeated string job_ids = 1;
 }

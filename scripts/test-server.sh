@@ -33,5 +33,15 @@ status=$(grpc -d "{\"job_id\": \"$job_id\"}" "$HOST" "$SERVICE/GetJobStatus")
 echo "$status" | jq .
 
 echo
+echo "=== StartJob (second) ==="
+response2=$(grpc -d '{"command": "sleep 30"}' "$HOST" "$SERVICE/StartJob")
+echo "$response2" | jq .
+
+echo
+echo "=== ListJobs ==="
+jobs=$(grpc "$HOST" "$SERVICE/ListJobs")
+echo "$jobs" | jq .
+
+echo
 echo "=== WatchJobLogs (replay finished container) ==="
 grpc -d "{\"job_id\": \"$job_id\"}" "$HOST" "$SERVICE/WatchJobLogs" | jq .

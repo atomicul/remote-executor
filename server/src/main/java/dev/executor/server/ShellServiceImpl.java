@@ -92,6 +92,22 @@ public class ShellServiceImpl extends ShellServiceGrpc.ShellServiceImplBase {
     }
 
     @Override
+    public void listJobs(ListJobsRequest request, StreamObserver<ListJobsResponse> responseObserver) {
+        try {
+            var response = ListJobsResponse.newBuilder()
+                    .addAllJobIds(jobToContainer.keySet())
+                    .build();
+
+            responseObserver.onNext(response);
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                    .withDescription("Failed to list jobs: " + e.getMessage())
+                    .asException());
+        }
+    }
+
+    @Override
     public void watchJobLogs(JobIdRequest request, StreamObserver<LogChunk> responseObserver) {
         var containerId = jobToContainer.get(request.getJobId());
         if (containerId == null) {
