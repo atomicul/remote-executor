@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public class DockerJavaOrchestrator implements ContainerOrchestrator {
 
@@ -115,5 +116,31 @@ public class DockerJavaOrchestrator implements ContainerOrchestrator {
         }
 
         return logs;
+    }
+
+    @Override
+    public void streamLogs(String containerId, Consumer<String> onLine, Runnable onComplete, Consumer<Throwable> onError) {
+        docker.logContainerCmd(containerId)
+                .withStdOut(true)
+                .withStdErr(true)
+                .withFollowStream(true)
+                .exec(new com.github.dockerjava.api.async.ResultCallback.Adapter<Frame>() {
+                    @Override
+                    public void onNext(Frame frame) {
+                        onLine.accept(new String(frame.getPayload()).stripTrailing());
+                    }
+
+                    @Override
+                    public void onComplete() {
+                        onComplete.run();
+                        super.onComplete();
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        onError.accept(throwable);
+                        super.onError(throwable);
+                    }
+                });
     }
 }

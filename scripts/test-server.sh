@@ -31,3 +31,7 @@ sleep 3
 echo "=== GetJobStatus (completed) ==="
 status=$(grpc -d "{\"job_id\": \"$job_id\"}" "$HOST" "$SERVICE/GetJobStatus")
 echo "$status" | jq .
+
+echo
+echo "=== WatchJobLogs (replay finished container) ==="
+grpc -d "{\"job_id\": \"$job_id\"}" "$HOST" "$SERVICE/WatchJobLogs" | jq .

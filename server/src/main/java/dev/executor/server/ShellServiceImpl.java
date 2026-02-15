@@ -3,6 +3,7 @@ package dev.executor.server;
 import dev.executor.common.*;
 import dev.executor.server.orchestrator.ContainerOrchestrator;
 import dev.executor.server.orchestrator.ResourceLimits;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.util.Map;
 import java.util.UUID;
@@ -88,5 +89,25 @@ public class ShellServiceImpl extends ShellServiceGrpc.ShellServiceImplBase {
                     .withDescription("Failed to get job status: " + e.getMessage())
                     .asException());
         }
+    }
+
+    @Override
+    public void watchJobLogs(JobIdRequest request, StreamObserver<LogChunk> responseObserver) {
+        var containerId = jobToContainer.get(request.getJobId());
+        if (containerId == null) {
+            responseObserver.onError(Status.NOT_FOUND
+                    .withDescription("Job not found: " + request.getJobId())
+                    .asException());
+            return;
+        }
+
+        orchestrator.streamLogs(
+                containerId,
+                line -> responseObserver.onNext(LogChunk.newBuilder().setContent(line).build()),
+                responseObserver::onCompleted,
+                error -> responseObserver.onError(Status.INTERNAL
+                        .withDescription("Log streaming failed: " + error.getMessage())
+                        .asException())
+        );
     }
 }
