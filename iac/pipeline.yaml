@@ -1,0 +1,266 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: '100% Complete CI/CD PoC: CodePipeline + EC2 Image Builder for Remote Executor'
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Description: The name of the GitHub/Bitbucket repository (e.g., my-org/remote-executor).
+  BranchName:
+    Type: String
+    Default: main
+    Description: The branch to build from.
+  CodeStarConnectionArn:
+    Type: String
+    Description: The ARN of the AWS CodeStar Connection to your Git provider.
+
+Resources:
+  # ---------------------------------------------------------
+  # 1. STORAGE
+  # ---------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ---------------------------------------------------------
+  # 2. EC2 IMAGE BUILDER RESOURCES
+  # ---------------------------------------------------------
+  ImageBuilderInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder
+      Policies:
+        - PolicyName: S3ArtifactAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+
+  ImageBuilderInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ImageBuilderInstanceRole
+
+  ImageBuilderInfraConfig:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    Properties:
+      Name: remote-executor-infra
+      InstanceProfileName: !Ref ImageBuilderInstanceProfile
+
+  ImageBuilderComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Name: remote-executor-setup
+      Platform: Linux
+      Version: '1.0.0'
+      # The component YAML is embedded directly as a string here!
+      Data: !Sub |
+        name: RemoteExecutorSetup
+        description: Installs Java 21, Docker, and the Remote Executor
+        schemaVersion: 1.0
+        phases:
+          - name: build
+            steps:
+              - name: InstallDependencies
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - dnf update -y
+                    - dnf install -y java-21-amazon-corretto docker
+                    - systemctl enable docker
+                    - systemctl start docker
+              - name: DownloadAppArchive
+                action: S3Download
+                inputs:
+                  - source: s3://${ArtifactBucket}/remote-executor/server.tar
+                    destination: /opt/server.tar
+              - name: ExtractApp
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - cd /opt
+                    - tar -xvf server.tar
+                    - chmod +x /opt/server/bin/server
+              - name: ConfigureSystemd
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      cat << 'EOF' > /etc/systemd/system/remote-executor.service
+                      [Unit]
+                      Description=Remote Shell Executor Service
+                      After=docker.service
+                      Requires=docker.service
+
+                      [Service]
+                      ExecStart=/opt/server/bin/server
+                      Restart=always
+                      User=root 
+
+                      [Install]
+                      WantedBy=multi-user.target
+                      EOF
+                    - systemctl enable remote-executor.service
+
+  ImageBuilderRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Name: remote-executor-recipe
+      Version: '1.0.0'
+      # Automatically pulls the latest Amazon Linux 2023 provided by AWS
+      ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2023-x86/x.x.x'
+      Components:
+        - ComponentArn: !GetAtt ImageBuilderComponent.Arn
+
+  ImagePipeline:
+    Type: AWS::ImageBuilder::ImagePipeline
+    Properties:
+      Name: remote-executor-pipeline
+      ImageRecipeArn: !GetAtt ImageBuilderRecipe.Arn
+      InfrastructureConfigurationArn: !GetAtt ImageBuilderInfraConfig.Arn
+
+  # ---------------------------------------------------------
+  # 3. CI/CD RESOURCES
+  # ---------------------------------------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildBasePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - imagebuilder:StartImagePipelineExecution
+                # Dynamically references the pipeline we created above!
+                Resource: !Ref ImagePipeline 
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: remote-executor-build 
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      ConcurrentBuildLimit: 1 
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+          - Name: PIPELINE_ARN
+            Value: !Ref ImagePipeline 
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: server/buildspec.yml 
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: !GetAtt CodeBuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref CodeStarConnectionArn
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: remote-executor-pipeline 
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref RepositoryName
+                BranchName: !Ref BranchName
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+
+Outputs:
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
