@@ -1,0 +1,18 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto21
+  build:
+    commands:
+      - echo "Building the Sidecar distribution..."
+      - chmod +x ./gradlew
+      - ./gradlew :sidecar:distTar
+  post_build:
+    commands:
+      - echo "Uploading artifact to the environment-specific S3 Bucket..."
+      - aws s3 cp sidecar/build/distributions/sidecar.tar s3://$ARTIFACT_BUCKET/remote-executor/sidecar.tar
+
+      - echo "Triggering EC2 Image Builder Pipeline..."
+      - aws imagebuilder start-image-pipeline-execution --image-pipeline-arn $PIPELINE_ARN

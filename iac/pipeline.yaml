@@ -52,6 +52,14 @@ Resources:
                 Action:
                   - s3:GetObject
                 Resource: !Sub '${ArtifactBucket.Arn}/*'
+        - PolicyName: SidecarDynamoDbAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/RemoteExecutor-JobState'
 
   ImageBuilderInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -138,6 +146,89 @@ Resources:
       InfrastructureConfigurationArn: !GetAtt ImageBuilderInfraConfig.Arn
 
   # ---------------------------------------------------------
+  # 2b. SIDECAR IMAGE BUILDER RESOURCES (Layered on Server AMI)
+  # ---------------------------------------------------------
+  SidecarImageBuilderComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Name: remote-executor-sidecar-setup
+      Platform: Linux
+      Version: '1.0.0'
+      Data: !Sub |
+        name: RemoteExecutorSidecarSetup
+        description: Installs the Remote Executor Sidecar and its systemd unit
+        schemaVersion: 1.0
+        phases:
+          - name: build
+            steps:
+              - name: DownloadSidecarArchive
+                action: S3Download
+                inputs:
+                  - source: s3://${ArtifactBucket}/remote-executor/sidecar.tar
+                    destination: /opt/sidecar.tar
+              - name: ExtractSidecar
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - cd /opt
+                    - tar -xvf sidecar.tar
+                    - chmod +x /opt/sidecar/bin/sidecar
+              - name: CreateInstanceIdScript
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      cat << 'SCRIPT' > /opt/sidecar/bin/fetch-instance-id.sh
+                      #!/bin/bash
+                      mkdir -p /run/sidecar
+                      TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+                        -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+                      INSTANCE_ID=$(curl -sf \
+                        -H "X-aws-ec2-metadata-token: $TOKEN" \
+                        http://169.254.169.254/latest/meta-data/instance-id)
+                      echo "INSTANCE_ID=$INSTANCE_ID" > /run/sidecar/instance-id.env
+                      SCRIPT
+                    - chmod +x /opt/sidecar/bin/fetch-instance-id.sh
+              - name: ConfigureSystemd
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      cat << 'EOF' > /etc/systemd/system/remote-executor-sidecar.service
+                      [Unit]
+                      Description=Remote Executor Sidecar
+                      After=remote-executor.service
+                      Requires=remote-executor.service
+
+                      [Service]
+                      ExecStartPre=/opt/sidecar/bin/fetch-instance-id.sh
+                      EnvironmentFile=/run/sidecar/instance-id.env
+                      ExecStart=/opt/sidecar/bin/sidecar localhost:9090
+                      Restart=always
+                      User=root
+
+                      [Install]
+                      WantedBy=multi-user.target
+                      EOF
+                    - systemctl enable remote-executor-sidecar.service
+
+  SidecarImageBuilderRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Name: remote-executor-sidecar-recipe
+      Version: '1.0.0'
+      ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/remote-executor-recipe/x.x.x'
+      Components:
+        - ComponentArn: !GetAtt SidecarImageBuilderComponent.Arn
+
+  SidecarImagePipeline:
+    Type: AWS::ImageBuilder::ImagePipeline
+    Properties:
+      Name: remote-executor-sidecar-pipeline
+      ImageRecipeArn: !GetAtt SidecarImageBuilderRecipe.Arn
+      InfrastructureConfigurationArn: !GetAtt ImageBuilderInfraConfig.Arn
+
+  # ---------------------------------------------------------
   # 3. CI/CD RESOURCES
   # ---------------------------------------------------------
   CodeBuildRole:
@@ -170,8 +261,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - imagebuilder:StartImagePipelineExecution
-                # Dynamically references the pipeline we created above!
-                Resource: !Ref ImagePipeline 
+                Resource:
+                  - !Ref ImagePipeline
+                  - !Ref SidecarImagePipeline
 
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
@@ -192,7 +284,28 @@ Resources:
             Value: !Ref ImagePipeline 
       Source:
         Type: CODEPIPELINE
-        BuildSpec: server/buildspec.yml 
+        BuildSpec: server/buildspec.yml
+
+  SidecarCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: remote-executor-sidecar-build
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      ConcurrentBuildLimit: 1
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+          - Name: PIPELINE_ARN
+            Value: !Ref SidecarImagePipeline
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: sidecar/buildspec.yml
 
   CodePipelineRole:
     Type: AWS::IAM::Role
@@ -219,7 +332,9 @@ Resources:
                 Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
-                Resource: !GetAtt CodeBuildProject.Arn
+                Resource:
+                  - !GetAtt CodeBuildProject.Arn
+                  - !GetAtt SidecarCodeBuildProject.Arn
               - Effect: Allow
                 Action:
                   - codestar-connections:UseConnection
@@ -250,7 +365,7 @@ Resources:
                 BranchName: !Ref BranchName
         - Name: Build
           Actions:
-            - Name: BuildAction
+            - Name: BuildServer
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -260,6 +375,16 @@ Resources:
                 - Name: SourceArtifact
               Configuration:
                 ProjectName: !Ref CodeBuildProject
+            - Name: BuildSidecar
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref SidecarCodeBuildProject
 
 Outputs:
   ArtifactBucketName:
