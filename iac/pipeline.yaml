@@ -264,6 +264,14 @@ Resources:
                 Resource:
                   - !Ref ImagePipeline
                   - !Ref SidecarImagePipeline
+              - Effect: Allow
+                Action:
+                  - imagebuilder:ListImagePipelineImages
+                Resource: !Ref ImagePipeline
+              - Effect: Allow
+                Action:
+                  - imagebuilder:GetImage
+                Resource: !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/remote-executor-recipe/*'
 
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
@@ -303,6 +311,8 @@ Resources:
             Value: !Ref ArtifactBucket
           - Name: PIPELINE_ARN
             Value: !Ref SidecarImagePipeline
+          - Name: SERVER_PIPELINE_ARN
+            Value: !Ref ImagePipeline
       Source:
         Type: CODEPIPELINE
         BuildSpec: sidecar/buildspec.yml
@@ -363,9 +373,9 @@ Resources:
                 ConnectionArn: !Ref CodeStarConnectionArn
                 FullRepositoryId: !Ref RepositoryName
                 BranchName: !Ref BranchName
-        - Name: Build
+        - Name: BuildServer
           Actions:
-            - Name: BuildServer
+            - Name: BuildServerAction
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -375,7 +385,9 @@ Resources:
                 - Name: SourceArtifact
               Configuration:
                 ProjectName: !Ref CodeBuildProject
-            - Name: BuildSidecar
+        - Name: BuildSidecar
+          Actions:
+            - Name: BuildSidecarAction
               ActionTypeId:
                 Category: Build
                 Owner: AWS

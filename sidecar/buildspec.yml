@@ -14,5 +14,39 @@ phases:
       - echo "Uploading artifact to the environment-specific S3 Bucket..."
       - aws s3 cp sidecar/build/distributions/sidecar.tar s3://$ARTIFACT_BUCKET/remote-executor/sidecar.tar
 
-      - echo "Triggering EC2 Image Builder Pipeline..."
+      - echo "Waiting for server AMI to become available..."
+      - |
+        IMAGE_ARN=$(aws imagebuilder list-image-pipeline-images \
+          --image-pipeline-arn "$SERVER_PIPELINE_ARN" \
+          --query 'imageSummaryList | sort_by(@, &dateCreated) | [-1].arn' \
+          --output text)
+        echo "Tracking server image: $IMAGE_ARN"
+        ELAPSED=0
+        while [ $ELAPSED -lt 2700 ]; do
+          STATUS=$(aws imagebuilder get-image \
+            --image-build-version-arn "$IMAGE_ARN" \
+            --query 'image.state.status' \
+            --output text)
+          case "$STATUS" in
+            AVAILABLE)
+              echo "Server image is ready"
+              break
+              ;;
+            FAILED|CANCELLED|DELETED)
+              echo "Server image build ended with status: $STATUS"
+              exit 1
+              ;;
+            *)
+              echo "Server image status: $STATUS (${ELAPSED}s elapsed)"
+              sleep 30
+              ELAPSED=$((ELAPSED + 30))
+              ;;
+          esac
+        done
+        if [ $ELAPSED -ge 2700 ]; then
+          echo "Timed out waiting for server image after 2700s"
+          exit 1
+        fi
+
+      - echo "Triggering Sidecar EC2 Image Builder Pipeline..."
       - aws imagebuilder start-image-pipeline-execution --image-pipeline-arn $PIPELINE_ARN
