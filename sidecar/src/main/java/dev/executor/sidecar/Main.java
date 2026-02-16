@@ -9,6 +9,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 @Command(name = "sidecar", mixinStandardHelpOptions = true)
 public class Main implements Runnable {
@@ -37,6 +38,12 @@ public class Main implements Runnable {
         var stub = ShellServiceGrpc.newBlockingStub(channel);
         var engine = new PollingEngine(stub);
         engine.addListener(new LoggingSubscriber());
+
+        if (!dryRun) {
+            var dynamoDb = DynamoDbClient.create();
+            var instanceId = System.getenv().getOrDefault("INSTANCE_ID", "unknown");
+            engine.addListener(new DynamoDbStatePersister(dynamoDb, instanceId));
+        }
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             logger.info("Shutting down sidecar");
