@@ -8,6 +8,8 @@ build/
 *.war
 *.ear
 
+bin/
+
 .idea/
 *.iml
 *.ipr
