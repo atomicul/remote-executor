@@ -1,5 +1,8 @@
 package dev.executor.sidecar;
 
+import dev.executor.common.ShellServiceGrpc;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -26,6 +29,28 @@ public class Main implements Runnable {
     public void run() {
         String mode = dryRun ? "Dry Run" : "Production";
         logger.info("Sidecar starting in {} mode, target={}, service={}", mode, target, service);
+
+        ManagedChannel channel = ManagedChannelBuilder.forTarget(target)
+                .usePlaintext()
+                .build();
+
+        var stub = ShellServiceGrpc.newBlockingStub(channel);
+        var engine = new PollingEngine(stub);
+        engine.addListener(new LoggingSubscriber());
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logger.info("Shutting down sidecar");
+            engine.shutdown();
+            channel.shutdown();
+        }));
+
+        engine.start();
+
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public static void main(String[] args) {
