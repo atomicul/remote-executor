@@ -201,22 +201,6 @@ Resources:
                     - cd /opt
                     - tar -xvf sidecar.tar
                     - chmod +x /opt/sidecar/bin/sidecar
-              - name: CreateInstanceIdScript
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - |
-                      cat << 'SCRIPT' > /opt/sidecar/bin/fetch-instance-id.sh
-                      #!/bin/bash
-                      mkdir -p /run/sidecar
-                      TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
-                        -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-                      INSTANCE_ID=$(curl -sf \
-                        -H "X-aws-ec2-metadata-token: $TOKEN" \
-                        http://169.254.169.254/latest/meta-data/instance-id)
-                      echo "INSTANCE_ID=$INSTANCE_ID" > /run/sidecar/instance-id.env
-                      SCRIPT
-                    - chmod +x /opt/sidecar/bin/fetch-instance-id.sh
               - name: ConfigureSystemd
                 action: ExecuteBash
                 inputs:
@@ -229,8 +213,7 @@ Resources:
                       Requires=remote-executor.service
 
                       [Service]
-                      ExecStartPre=/opt/sidecar/bin/fetch-instance-id.sh
-                      ExecStart=/bin/bash -c '. /run/sidecar/instance-id.env && exec /opt/sidecar/bin/sidecar localhost:9090'
+                      ExecStart=/opt/sidecar/bin/sidecar localhost:9090
                       StandardOutput=append:/var/log/remote-executor-sidecar.log
                       StandardError=append:/var/log/remote-executor-sidecar.log
                       Restart=always

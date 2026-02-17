@@ -9,6 +9,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
+import software.amazon.awssdk.imds.Ec2MetadataClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 @Command(name = "sidecar", mixinStandardHelpOptions = true)
@@ -41,7 +42,10 @@ public class Main implements Runnable {
 
         if (!dryRun) {
             var dynamoDb = DynamoDbClient.create();
-            var instanceId = System.getenv().getOrDefault("INSTANCE_ID", "unknown");
+            var imds = Ec2MetadataClient.create();
+            var instanceId = imds.get("/latest/meta-data/instance-id").asString();
+            imds.close();
+            logger.info("Resolved instance ID: {}", instanceId);
             engine.addListener(new DynamoDbStatePersister(dynamoDb, instanceId));
         }
 
