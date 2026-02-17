@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 <ACCOUNT_ID> <REGION> [pipeline|executor|dynamodb]"
+    echo "Usage: $0 <ACCOUNT_ID> <REGION> [pipeline|executor|dynamodb|scheduler]"
     echo "Example: $0 123456789012 us-east-1"
     exit 1
 fi
@@ -77,6 +77,24 @@ deploy_executor() {
     echo "✅ Stack $stack_name deployed."
 }
 
+deploy_scheduler() {
+    local stack_name="remote-executor-scheduler"
+    echo "Deploying stack: $stack_name"
+
+    aws cloudformation deploy \
+      --region "$REGION" \
+      --template-file iac/scheduler.yaml \
+      --stack-name "$stack_name" \
+      --capabilities CAPABILITY_IAM \
+      --no-fail-on-empty-changeset \
+      --tags "Project=RemoteExecutor" "ManagedBy=CloudFormation" \
+      --parameter-overrides \
+          LambdaCodeBucket="${LAMBDA_CODE_BUCKET:?LAMBDA_CODE_BUCKET env var required}" \
+          LambdaCodeKey="${LAMBDA_CODE_KEY:?LAMBDA_CODE_KEY env var required}"
+
+    echo "✅ Stack $stack_name deployed."
+}
+
 deploy_dynamodb() {
     local stack_name="remote-executor-dynamodb"
     echo "Deploying stack: $stack_name"
@@ -108,14 +126,19 @@ case "$STACK" in
     dynamodb)
         deploy_dynamodb
         ;;
+    scheduler)
+        deploy_scheduler
+        ;;
     all)
         deploy_pipeline & pid1=$!
         deploy_executor & pid2=$!
         deploy_dynamodb & pid3=$!
+        deploy_scheduler & pid4=$!
         fail=0
         wait "$pid1" || fail=1
         wait "$pid2" || fail=1
         wait "$pid3" || fail=1
+        wait "$pid4" || fail=1
         if [ "$fail" -ne 0 ]; then
             echo ""
             echo "❌ One or more stacks failed to deploy."
@@ -126,7 +149,7 @@ case "$STACK" in
         ;;
     *)
         echo "❌ Unknown stack: $STACK"
-        echo "Valid options: pipeline, executor, dynamodb"
+        echo "Valid options: pipeline, executor, dynamodb, scheduler"
         exit 1
         ;;
 esac
