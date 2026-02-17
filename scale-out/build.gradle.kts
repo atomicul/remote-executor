@@ -1,7 +1,14 @@
+plugins {
+    id("com.gradleup.shadow") version "9.0.0-beta12"
+}
+
+tasks.shadowJar {
+    archiveClassifier.set("")
+    mergeServiceFiles()
+}
+
 tasks.jar {
-    dependsOn(configurations.runtimeClasspath)
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    from({ configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) } })
+    enabled = false
 }
 
 dependencies {

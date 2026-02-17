@@ -7,7 +7,7 @@ phases:
   build:
     commands:
       - chmod +x ./gradlew
-      - ./gradlew :scale-out:jar
+      - ./gradlew :scale-out:shadowJar
   post_build:
     commands:
       - aws s3 cp scale-out/build/libs/scale-out.jar s3://$ARTIFACT_BUCKET/remote-executor/scale-out.jar
