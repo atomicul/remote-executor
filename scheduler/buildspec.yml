@@ -1,0 +1,14 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto21
+  build:
+    commands:
+      - chmod +x ./gradlew
+      - ./gradlew :scheduler:distTar
+  post_build:
+    commands:
+      - aws s3 cp scheduler/build/distributions/scheduler.tar s3://$ARTIFACT_BUCKET/remote-executor/scheduler.tar
+      - aws imagebuilder start-image-pipeline-execution --image-pipeline-arn $PIPELINE_ARN

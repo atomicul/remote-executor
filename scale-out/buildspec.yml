@@ -1,0 +1,13 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto21
+  build:
+    commands:
+      - chmod +x ./gradlew
+      - ./gradlew :scale-out:jar
+  post_build:
+    commands:
+      - aws s3 cp scale-out/build/libs/scale-out.jar s3://$ARTIFACT_BUCKET/remote-executor/scale-out.jar
