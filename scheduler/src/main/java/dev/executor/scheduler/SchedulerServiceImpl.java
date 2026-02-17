@@ -128,7 +128,10 @@ public class SchedulerServiceImpl extends ShellServiceGrpc.ShellServiceImplBase 
         }
         var executorJobId = item.get("ExecutorJobId");
         if (executorJobId != null) {
-            return getItem(executorJobId.s());
+            var executorItem = getItem(executorJobId.s());
+            if (executorItem != null) {
+                return executorItem;
+            }
         }
         return item;
     }
