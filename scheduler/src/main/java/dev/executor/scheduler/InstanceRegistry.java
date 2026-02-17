@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -31,6 +32,8 @@ public class InstanceRegistry {
         this.config = config;
     }
 
+    private static final Set<String> EXCLUDED_STATES = Set.of("PROVISIONING", "SCHEDULED");
+
     public Map<String, Integer> getRunningJobCounts() {
         var scanRequest = ScanRequest.builder()
                 .tableName(TABLE_NAME)
@@ -43,6 +46,9 @@ public class InstanceRegistry {
             for (var item : page.items()) {
                 var instanceId = item.get("InstanceId").s();
                 var jobState = item.get("JobState").s();
+                if (EXCLUDED_STATES.contains(jobState)) {
+                    continue;
+                }
                 counts.merge(instanceId, "RUNNING".equals(jobState) ? 1 : 0, Integer::sum);
             }
         }
@@ -75,14 +81,10 @@ public class InstanceRegistry {
         return instance.privateIpAddress();
     }
 
-    public String selectTarget() {
+    public Optional<String> selectTarget() {
         var counts = getRunningJobCounts();
         int maxJobs = config.getInt("max-running-jobs-per-instance", 5);
-        var instanceId = findAvailableInstance(counts, maxJobs)
-                .orElseThrow(() -> io.grpc.Status.UNAVAILABLE
-                        .withDescription("No instances with available capacity")
-                        .asRuntimeException());
-        return resolveIp(instanceId);
+        return findAvailableInstance(counts, maxJobs).map(this::resolveIp);
     }
 
     static Optional<String> findAvailableInstance(Map<String, Integer> counts, int maxJobs) {
@@ -97,6 +99,9 @@ public class InstanceRegistry {
         for (var item : items) {
             var instanceId = item.get("InstanceId").s();
             var jobState = item.get("JobState").s();
+            if (EXCLUDED_STATES.contains(jobState)) {
+                continue;
+            }
             counts.merge(instanceId, "RUNNING".equals(jobState) ? 1 : 0, Integer::sum);
         }
         return counts;

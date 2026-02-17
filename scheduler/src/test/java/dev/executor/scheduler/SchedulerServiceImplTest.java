@@ -67,4 +67,35 @@ class SchedulerServiceImplTest {
         assertEquals("SYSTEM_ERROR", status.getSystemError().getReason());
         assertEquals("Container not found", status.getSystemError().getMessage());
     }
+
+    @Test
+    void mapsScheduledItemWithoutResult() {
+        var item = Map.of(
+                "JobId", AttributeValue.fromS("sched-1"),
+                "JobState", AttributeValue.fromS("SCHEDULED"),
+                "UpdatedAt", AttributeValue.fromN("1739750400"));
+
+        var status = SchedulerServiceImpl.toJobStatus(item);
+
+        assertEquals("sched-1", status.getJobId());
+        assertFalse(status.hasRunning());
+        assertFalse(status.hasCompleted());
+        assertFalse(status.hasSystemError());
+    }
+
+    @Test
+    void mapsProvisioningItemWithoutResult() {
+        var item = Map.of(
+                "JobId", AttributeValue.fromS("sched-2"),
+                "JobState", AttributeValue.fromS("PROVISIONING"),
+                "InstanceId", AttributeValue.fromS("i-xyz"),
+                "UpdatedAt", AttributeValue.fromN("1739750500"));
+
+        var status = SchedulerServiceImpl.toJobStatus(item);
+
+        assertEquals("sched-2", status.getJobId());
+        assertFalse(status.hasRunning());
+        assertFalse(status.hasCompleted());
+        assertFalse(status.hasSystemError());
+    }
 }

@@ -40,6 +40,20 @@ class InstanceRegistryTest {
     }
 
     @Test
+    void skipsProvisioningAndScheduledStates() {
+        var items = List.of(
+                Map.of("InstanceId", AttributeValue.fromS("i-aaa"), "JobState", AttributeValue.fromS("PROVISIONING")),
+                Map.of("InstanceId", AttributeValue.fromS("i-bbb"), "JobState", AttributeValue.fromS("RUNNING")),
+                Map.of("InstanceId", AttributeValue.fromS("i-ccc"), "JobState", AttributeValue.fromS("SCHEDULED")));
+
+        var counts = InstanceRegistry.countByInstanceId(items);
+
+        assertFalse(counts.containsKey("i-aaa"));
+        assertEquals(1, counts.get("i-bbb"));
+        assertFalse(counts.containsKey("i-ccc"));
+    }
+
+    @Test
     void countsByInstanceIdEmptyList() {
         var counts = InstanceRegistry.countByInstanceId(List.of());
 

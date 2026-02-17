@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.sns.SnsClient;
 
 public class Main {
 
@@ -21,8 +22,11 @@ public class Main {
         var config = new Config(SSM_PREFIX);
         var dynamoDb = DynamoDbClient.create();
         var ec2 = Ec2Client.create();
+        var sns = SnsClient.create();
+        var snsTopicArn = config.getString("sns-topic-arn", "");
+
         var registry = new InstanceRegistry(dynamoDb, ec2, config);
-        var service = new SchedulerServiceImpl(dynamoDb);
+        var service = new SchedulerServiceImpl(dynamoDb, registry, sns, snsTopicArn);
 
         Server server = ServerBuilder.forPort(PORT)
                 .addService(service)
@@ -37,6 +41,7 @@ public class Main {
             server.shutdown();
             dynamoDb.close();
             ec2.close();
+            sns.close();
             config.close();
         }));
 
