@@ -6,7 +6,7 @@ import com.amazonaws.services.lambda.runtime.events.SQSEvent;
 import dev.executor.common.CommandRequest;
 import dev.executor.common.ShellServiceGrpc;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -48,7 +48,7 @@ public class SubmitHandler implements RequestHandler<SQSEvent, Void> {
 
         ManagedChannel channel = null;
         try {
-            channel = ManagedChannelBuilder
+            channel = NettyChannelBuilder
                     .forAddress(ip, EXECUTOR_PORT)
                     .usePlaintext()
                     .build();
