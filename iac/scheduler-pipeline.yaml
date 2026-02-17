@@ -1,0 +1,408 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CI/CD pipeline for the Scheduler gRPC server and scale-out Lambdas'
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Description: The name of the GitHub/Bitbucket repository (e.g., my-org/remote-executor).
+  BranchName:
+    Type: String
+    Default: main
+    Description: The branch to build from.
+  CodeStarConnectionArn:
+    Type: String
+    Description: The ARN of the AWS CodeStar Connection to your Git provider.
+  ImageVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: >-
+      Semantic version for Image Builder components and recipes.
+      Must be bumped on every template update because these resources are immutable.
+
+Resources:
+  # ---------------------------------------------------------
+  # 1. STORAGE
+  # ---------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ---------------------------------------------------------
+  # 2. EC2 IMAGE BUILDER RESOURCES (Scheduler AMI)
+  # ---------------------------------------------------------
+  SchedulerImageBuilderInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder
+      Policies:
+        - PolicyName: S3ArtifactAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+
+  SchedulerImageBuilderInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SchedulerImageBuilderInstanceRole
+
+  SchedulerImageBuilderInfraConfig:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    Properties:
+      Name: remote-executor-scheduler-infra
+      InstanceProfileName: !Ref SchedulerImageBuilderInstanceProfile
+
+  SchedulerImageBuilderComponent:
+    Type: AWS::ImageBuilder::Component
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: remote-executor-scheduler-setup
+      Platform: Linux
+      Version: !Ref ImageVersion
+      Data: !Sub |
+        name: RemoteExecutorSchedulerSetup
+        description: Installs Java 21 and the Scheduler gRPC server
+        schemaVersion: 1.0
+        phases:
+          - name: build
+            steps:
+              - name: InstallDependencies
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - dnf update -y
+                    - dnf install -y java-21-amazon-corretto
+              - name: DownloadSchedulerArchive
+                action: S3Download
+                inputs:
+                  - source: s3://${ArtifactBucket}/remote-executor/scheduler.tar
+                    destination: /opt/scheduler.tar
+              - name: ExtractApp
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - cd /opt
+                    - tar -xvf scheduler.tar
+                    - chmod +x /opt/scheduler/bin/scheduler
+              - name: ConfigureSystemd
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      cat << 'EOF' > /etc/systemd/system/remote-executor-scheduler.service
+                      [Unit]
+                      Description=Remote Executor Scheduler gRPC Service
+                      After=network.target
+
+                      [Service]
+                      ExecStart=/opt/scheduler/bin/scheduler
+                      StandardOutput=journal
+                      StandardError=journal
+                      Restart=always
+                      User=root
+
+                      [Install]
+                      WantedBy=multi-user.target
+                      EOF
+                    - systemctl enable remote-executor-scheduler.service
+              - name: InstallCloudWatchAgent
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - dnf install -y amazon-cloudwatch-agent
+                    - |
+                      cat << 'EOF' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+                      {
+                        "logs": {
+                          "logs_collected": {
+                            "journald": {
+                              "unit": "remote-executor-scheduler.service",
+                              "log_group_name": "/remote-executor/scheduler",
+                              "log_stream_name": "{instance_id}"
+                            }
+                          }
+                        }
+                      }
+                      EOF
+                    - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+                    - systemctl enable amazon-cloudwatch-agent
+
+  SchedulerImageBuilderRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: remote-executor-scheduler-recipe
+      Version: !Ref ImageVersion
+      ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2023-x86/x.x.x'
+      Components:
+        - ComponentArn: !GetAtt SchedulerImageBuilderComponent.Arn
+
+  SchedulerImagePipeline:
+    Type: AWS::ImageBuilder::ImagePipeline
+    Properties:
+      Name: remote-executor-scheduler-pipeline
+      ImageRecipeArn: !GetAtt SchedulerImageBuilderRecipe.Arn
+      InfrastructureConfigurationArn: !GetAtt SchedulerImageBuilderInfraConfig.Arn
+
+  # ---------------------------------------------------------
+  # 3. CI/CD RESOURCES
+  # ---------------------------------------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildBasePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - imagebuilder:StartImagePipelineExecution
+                Resource: !Ref SchedulerImagePipeline
+
+  ScaleOutCodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: remote-executor-scale-out-build
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      ConcurrentBuildLimit: 1
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: scale-out/buildspec.yml
+
+  SchedulerCodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: remote-executor-scheduler-build
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      ConcurrentBuildLimit: 1
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+          - Name: PIPELINE_ARN
+            Value: !Ref SchedulerImagePipeline
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: scheduler/buildspec.yml
+
+  # ---------------------------------------------------------
+  # 3b. EVENTBRIDGE → LAMBDA: PUBLISH LAMBDA VERSIONS ON BUILD
+  # ---------------------------------------------------------
+  LambdaPublisherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PublishLambdaVersions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:UpdateFunctionCode
+                  - lambda:PublishVersion
+                  - lambda:GetFunction
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:remote-executor-provisioner'
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:remote-executor-submitter'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+
+  LambdaPublisherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: remote-executor-lambda-publisher
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 120
+      Role: !GetAtt LambdaPublisherRole.Arn
+      Environment:
+        Variables:
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+      Code:
+        ZipFile: |
+          import os, boto3
+          def handler(event, context):
+              client = boto3.client("lambda")
+              bucket = os.environ["ARTIFACT_BUCKET"]
+              key = "remote-executor/scale-out.jar"
+              for fn in ["remote-executor-provisioner", "remote-executor-submitter"]:
+                  client.update_function_code(FunctionName=fn, S3Bucket=bucket, S3Key=key)
+                  waiter = client.get_waiter("function_updated_v2")
+                  waiter.wait(FunctionName=fn)
+                  version = client.publish_version(FunctionName=fn)["Version"]
+                  print(f"Published {fn} version {version}")
+
+  ScaleOutBuildSucceededRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: remote-executor-scale-out-build-succeeded
+      EventPattern:
+        source:
+          - aws.codebuild
+        detail-type:
+          - CodeBuild Build State Change
+        detail:
+          build-status:
+            - SUCCEEDED
+          project-name:
+            - !Ref ScaleOutCodeBuild
+      Targets:
+        - Arn: !GetAtt LambdaPublisherFunction.Arn
+          Id: LambdaPublisherTarget
+
+  LambdaPublisherPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaPublisherFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScaleOutBuildSucceededRule.Arn
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource:
+                  - !GetAtt ScaleOutCodeBuild.Arn
+                  - !GetAtt SchedulerCodeBuild.Arn
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref CodeStarConnectionArn
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: remote-executor-scheduler-pipeline
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref RepositoryName
+                BranchName: !Ref BranchName
+        - Name: Build
+          Actions:
+            - Name: BuildScaleOut
+              RunOrder: 1
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref ScaleOutCodeBuild
+            - Name: BuildScheduler
+              RunOrder: 1
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref SchedulerCodeBuild
+
+Outputs:
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket

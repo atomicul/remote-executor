@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 <ACCOUNT_ID> <REGION> [pipeline|executor|dynamodb|scheduler]"
+    echo "Usage: $0 <ACCOUNT_ID> <REGION> [pipeline|executor|dynamodb|scheduler|scheduler-pipeline]"
     echo "Example: $0 123456789012 us-east-1"
     exit 1
 fi
@@ -62,6 +62,50 @@ deploy_pipeline() {
     echo "✅ Stack $stack_name deployed."
 }
 
+deploy_scheduler_pipeline() {
+    if [ -z "${CODESTAR_ARN:-}" ]; then
+        echo "❌ Error: CODESTAR_ARN environment variable is not set."
+        echo "Please create a CodeStar connection in AWS and run: export CODESTAR_ARN=\"arn:aws:...\""
+        exit 1
+    fi
+
+    local stack_name="remote-executor-scheduler-pipeline"
+
+    local current_version
+    current_version=$(aws imagebuilder list-components \
+        --owner Self \
+        --filters "name=name,values=remote-executor-scheduler-setup" \
+        --region "$REGION" \
+        --query 'componentVersionList[].version' \
+        --output text 2>/dev/null \
+        | tr '\t' '\n' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1) || true
+
+    if [ -z "$current_version" ]; then
+        current_version="0.0.0"
+    fi
+
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$current_version"
+    local next_version="${major}.${minor}.$((patch + 1))"
+
+    echo "Deploying stack: $stack_name (ImageVersion: $current_version → $next_version)"
+
+    aws cloudformation deploy \
+      --region "$REGION" \
+      --template-file iac/scheduler-pipeline.yaml \
+      --stack-name "$stack_name" \
+      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+      --no-fail-on-empty-changeset \
+      --tags "Project=RemoteExecutor" "ManagedBy=CloudFormation" \
+      --parameter-overrides \
+          RepositoryName="atomicul/remote-executor" \
+          BranchName="main" \
+          CodeStarConnectionArn="$CODESTAR_ARN" \
+          ImageVersion="$next_version"
+
+    echo "✅ Stack $stack_name deployed."
+}
+
 deploy_executor() {
     local stack_name="remote-executor-executor"
     echo "Deploying stack: $stack_name"
@@ -87,6 +131,12 @@ deploy_scheduler() {
     local stack_name="remote-executor-scheduler"
     echo "Deploying stack: $stack_name"
 
+    local artifact_bucket
+    artifact_bucket=$(aws cloudformation describe-stacks \
+        --stack-name remote-executor-scheduler-pipeline \
+        --query 'Stacks[0].Outputs[?OutputKey==`ArtifactBucketName`].OutputValue' \
+        --output text --region "$REGION")
+
     aws cloudformation deploy \
       --region "$REGION" \
       --template-file iac/scheduler.yaml \
@@ -95,8 +145,8 @@ deploy_scheduler() {
       --no-fail-on-empty-changeset \
       --tags "Project=RemoteExecutor" "ManagedBy=CloudFormation" \
       --parameter-overrides \
-          LambdaCodeBucket="${LAMBDA_CODE_BUCKET:?LAMBDA_CODE_BUCKET env var required}" \
-          LambdaCodeKey="${LAMBDA_CODE_KEY:?LAMBDA_CODE_KEY env var required}"
+          LambdaCodeBucket="$artifact_bucket" \
+          LambdaCodeKey="remote-executor/scale-out.jar" \
           ProvisionerVersion="$PROVISIONER_VERSION" \
           SubmitterVersion="$SUBMITTER_VERSION"
 
@@ -137,16 +187,21 @@ case "$STACK" in
     scheduler)
         deploy_scheduler
         ;;
+    scheduler-pipeline)
+        deploy_scheduler_pipeline
+        ;;
     all)
         deploy_pipeline & pid1=$!
         deploy_executor & pid2=$!
         deploy_dynamodb & pid3=$!
-        deploy_scheduler & pid4=$!
+        deploy_scheduler_pipeline & pid4=$!
+        deploy_scheduler & pid5=$!
         fail=0
         wait "$pid1" || fail=1
         wait "$pid2" || fail=1
         wait "$pid3" || fail=1
         wait "$pid4" || fail=1
+        wait "$pid5" || fail=1
         if [ "$fail" -ne 0 ]; then
             echo ""
             echo "❌ One or more stacks failed to deploy."
@@ -157,7 +212,7 @@ case "$STACK" in
         ;;
     *)
         echo "❌ Unknown stack: $STACK"
-        echo "Valid options: pipeline, executor, dynamodb, scheduler"
+        echo "Valid options: pipeline, executor, dynamodb, scheduler, scheduler-pipeline"
         exit 1
         ;;
 esac
