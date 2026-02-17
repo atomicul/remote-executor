@@ -1,8 +1,10 @@
 package dev.executor.scheduler;
 
+import dev.executor.common.Config;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -21,27 +23,27 @@ public class InstanceRegistry {
 
     private final DynamoDbClient dynamoDb;
     private final Ec2Client ec2;
+    private final Config config;
 
-    public InstanceRegistry(DynamoDbClient dynamoDb, Ec2Client ec2) {
+    public InstanceRegistry(DynamoDbClient dynamoDb, Ec2Client ec2, Config config) {
         this.dynamoDb = dynamoDb;
         this.ec2 = ec2;
+        this.config = config;
     }
 
     public Map<String, Integer> getRunningJobCounts() {
         var scanRequest = ScanRequest.builder()
                 .tableName(TABLE_NAME)
                 .indexName(INDEX_NAME)
-                .filterExpression("JobState = :state")
-                .expressionAttributeValues(Map.of(
-                        ":state", AttributeValue.fromS("RUNNING")))
-                .projectionExpression("InstanceId")
+                .projectionExpression("InstanceId, JobState")
                 .build();
 
         var counts = new HashMap<String, Integer>();
         for (var page : dynamoDb.scanPaginator(scanRequest)) {
             for (var item : page.items()) {
                 var instanceId = item.get("InstanceId").s();
-                counts.merge(instanceId, 1, Integer::sum);
+                var jobState = item.get("JobState").s();
+                counts.merge(instanceId, "RUNNING".equals(jobState) ? 1 : 0, Integer::sum);
             }
         }
 
@@ -73,11 +75,29 @@ public class InstanceRegistry {
         return instance.privateIpAddress();
     }
 
+    public String selectTarget() {
+        var counts = getRunningJobCounts();
+        int maxJobs = config.getInt("max-running-jobs-per-instance", 5);
+        var instanceId = findAvailableInstance(counts, maxJobs)
+                .orElseThrow(() -> io.grpc.Status.UNAVAILABLE
+                        .withDescription("No instances with available capacity")
+                        .asRuntimeException());
+        return resolveIp(instanceId);
+    }
+
+    static Optional<String> findAvailableInstance(Map<String, Integer> counts, int maxJobs) {
+        return counts.entrySet().stream()
+                .filter(e -> e.getValue() < maxJobs)
+                .map(Map.Entry::getKey)
+                .findFirst();
+    }
+
     static Map<String, Integer> countByInstanceId(List<Map<String, AttributeValue>> items) {
         var counts = new HashMap<String, Integer>();
         for (var item : items) {
             var instanceId = item.get("InstanceId").s();
-            counts.merge(instanceId, 1, Integer::sum);
+            var jobState = item.get("JobState").s();
+            counts.merge(instanceId, "RUNNING".equals(jobState) ? 1 : 0, Integer::sum);
         }
         return counts;
     }
