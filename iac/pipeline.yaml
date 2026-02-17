@@ -70,7 +70,7 @@ Resources:
     Properties:
       Name: remote-executor-setup
       Platform: Linux
-      Version: '1.0.0'
+      Version: '1.1.0'
       # The component YAML is embedded directly as a string here!
       Data: !Sub |
         name: RemoteExecutorSetup
@@ -112,19 +112,45 @@ Resources:
 
                       [Service]
                       ExecStart=/opt/server/bin/server
+                      StandardOutput=append:/var/log/remote-executor.log
+                      StandardError=append:/var/log/remote-executor.log
                       Restart=always
-                      User=root 
+                      User=root
 
                       [Install]
                       WantedBy=multi-user.target
                       EOF
                     - systemctl enable remote-executor.service
+              - name: InstallCloudWatchAgent
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - dnf install -y amazon-cloudwatch-agent
+                    - |
+                      cat << 'EOF' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+                      {
+                        "logs": {
+                          "logs_collected": {
+                            "files": {
+                              "collect_list": [
+                                {
+                                  "file_path": "/var/log/remote-executor.log",
+                                  "log_group_name": "/remote-executor/server",
+                                  "log_stream_name": "{instance_id}"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                      EOF
+                    - systemctl enable amazon-cloudwatch-agent
 
   ImageBuilderRecipe:
     Type: AWS::ImageBuilder::ImageRecipe
     Properties:
       Name: remote-executor-recipe
-      Version: '1.0.0'
+      Version: '1.1.0'
       # Automatically pulls the latest Amazon Linux 2023 provided by AWS
       ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2023-x86/x.x.x'
       Components:
@@ -145,7 +171,7 @@ Resources:
     Properties:
       Name: remote-executor-sidecar-setup
       Platform: Linux
-      Version: '1.0.0'
+      Version: '1.1.0'
       Data: !Sub |
         name: RemoteExecutorSidecarSetup
         description: Installs the Remote Executor Sidecar and its systemd unit
@@ -195,6 +221,8 @@ Resources:
                       [Service]
                       ExecStartPre=/opt/sidecar/bin/fetch-instance-id.sh
                       ExecStart=/bin/bash -c '. /run/sidecar/instance-id.env && exec /opt/sidecar/bin/sidecar localhost:9090'
+                      StandardOutput=append:/var/log/remote-executor-sidecar.log
+                      StandardError=append:/var/log/remote-executor-sidecar.log
                       Restart=always
                       RestartSec=5
                       User=root
@@ -203,12 +231,19 @@ Resources:
                       WantedBy=multi-user.target
                       EOF
                     - systemctl enable remote-executor-sidecar.service
+              - name: RegisterWithCloudWatchAgent
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - CW_CONFIG=/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+                    - jq '.logs.logs_collected.files.collect_list += [{"file_path":"/var/log/remote-executor-sidecar.log","log_group_name":"/remote-executor/sidecar","log_stream_name":"{instance_id}"}]' "$CW_CONFIG" > "$CW_CONFIG.tmp"
+                    - mv "$CW_CONFIG.tmp" "$CW_CONFIG"
 
   SidecarImageBuilderRecipe:
     Type: AWS::ImageBuilder::ImageRecipe
     Properties:
       Name: remote-executor-sidecar-recipe
-      Version: '1.0.0'
+      Version: '1.1.0'
       ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/remote-executor-recipe/x.x.x'
       Components:
         - ComponentArn: !GetAtt SidecarImageBuilderComponent.Arn
