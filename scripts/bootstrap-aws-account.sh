@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 <ACCOUNT_ID> <REGION> [pipeline|executor]"
+    echo "Usage: $0 <ACCOUNT_ID> <REGION> [pipeline|executor|dynamodb]"
     echo "Example: $0 123456789012 us-east-1"
     exit 1
 fi
@@ -58,6 +58,20 @@ deploy_executor() {
     echo "✅ Stack $stack_name deployed."
 }
 
+deploy_dynamodb() {
+    local stack_name="remote-executor-dynamodb"
+    echo "Deploying stack: $stack_name"
+
+    aws cloudformation deploy \
+      --region "$REGION" \
+      --template-file iac/dynamodb.yaml \
+      --stack-name "$stack_name" \
+      --no-fail-on-empty-changeset \
+      --tags "Project=RemoteExecutor" "ManagedBy=CloudFormation"
+
+    echo "✅ Stack $stack_name deployed."
+}
+
 echo "====================================================="
 echo " Bootstrapping AWS Infrastructure"
 echo " Account:    $ACCOUNT_ID"
@@ -72,12 +86,17 @@ case "$STACK" in
     executor)
         deploy_executor
         ;;
+    dynamodb)
+        deploy_dynamodb
+        ;;
     all)
         deploy_pipeline & pid1=$!
         deploy_executor & pid2=$!
+        deploy_dynamodb & pid3=$!
         fail=0
         wait "$pid1" || fail=1
         wait "$pid2" || fail=1
+        wait "$pid3" || fail=1
         if [ "$fail" -ne 0 ]; then
             echo ""
             echo "❌ One or more stacks failed to deploy."
@@ -88,7 +107,7 @@ case "$STACK" in
         ;;
     *)
         echo "❌ Unknown stack: $STACK"
-        echo "Valid options: pipeline, executor"
+        echo "Valid options: pipeline, executor, dynamodb"
         exit 1
         ;;
 esac

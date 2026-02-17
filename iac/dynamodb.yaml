@@ -1,0 +1,19 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DynamoDB tables for Remote Executor'
+
+Resources:
+  JobStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: RemoteExecutor-JobState
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: JobId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: JobId
+          KeyType: HASH
+
+Outputs:
+  JobStateTableArn:
+    Value: !GetAtt JobStateTable.Arn
