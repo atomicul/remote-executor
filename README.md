@@ -6,41 +6,33 @@ scheduling, fleet management, and auto-scaling transparently.
 
 ## Architecture
 
+**Steady state** — the scheduler proxies jobs to instances that have capacity:
+
 ```mermaid
-graph TD
-    Client([Client])
+flowchart LR
+    Client([Client]) -- gRPC --> Scheduler
+    Scheduler -- proxy StartJob / WatchJobLogs --> Executor
+    Scheduler -- read GetJobStatus / ListJobs --> DynamoDB[(DynamoDB)]
 
-    subgraph AWS
-        Scheduler[Scheduler]
-        DynamoDB[(RemoteExecutor-JobState)]
-
-        subgraph Scale-Out Path
-            SNS[SNS Topic]
-            Provisioner[Provisioner Lambda]
-            SQS[SQS Queue<br/>120s delay]
-            Submitter[Submitter Lambda]
-        end
-
-        subgraph EC2 Instance
-            Executor[Executor gRPC]
-            Sidecar[Sidecar]
-            Container[Docker Container]
-        end
+    subgraph EC2[EC2 Instance]
+        Executor[Executor] -- docker run --> Container[Container]
+        Sidecar[Sidecar] -- localhost gRPC --> Executor
     end
 
-    Client -- gRPC --> Scheduler
-    Scheduler -- read/write --> DynamoDB
-    Scheduler -- direct proxy --> Executor
-    Scheduler -- publish<br/>fleet full --> SNS
-    SNS --> Provisioner
-    Provisioner -- update state --> DynamoDB
-    Provisioner --> SQS
-    SQS --> Submitter
-    Submitter -- gRPC StartJob --> Executor
-    Submitter -- write ExecutorJobId --> DynamoDB
-    Sidecar -- localhost gRPC poll --> Executor
-    Sidecar -- PutItem --> DynamoDB
-    Executor -- run --> Container
+    Sidecar -- persist job state --> DynamoDB
+```
+
+**Scale-out** — when every instance is at capacity, the scheduler provisions a
+new one asynchronously:
+
+```mermaid
+flowchart LR
+    Scheduler -- 1. publish --> SNS[SNS]
+    SNS -- 2. trigger --> Provisioner[Provisioner Lambda]
+    Provisioner -- 3. ec2:RunInstances --> EC2[New EC2 Instance]
+    Provisioner -- 4. enqueue --> SQS[SQS — 120s delay]
+    SQS -- 5. trigger --> Submitter[Submitter Lambda]
+    Submitter -- 6. gRPC StartJob --> EC2
 ```
 
 ### Modules
