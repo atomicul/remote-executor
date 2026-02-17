@@ -2,6 +2,8 @@ package dev.executor.scheduler;
 
 import com.google.gson.Gson;
 import dev.executor.common.*;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.time.Instant;
@@ -23,6 +25,7 @@ public class SchedulerServiceImpl extends ShellServiceGrpc.ShellServiceImplBase 
 
     private static final Logger logger = LoggerFactory.getLogger(SchedulerServiceImpl.class);
     private static final String TABLE_NAME = "RemoteExecutor-JobState";
+    private static final int EXECUTOR_PORT = 9090;
 
     private final DynamoDbClient dynamoDb;
     private final InstanceRegistry registry;
@@ -93,9 +96,7 @@ public class SchedulerServiceImpl extends ShellServiceGrpc.ShellServiceImplBase 
             var target = registry.selectTarget();
 
             if (target.isPresent()) {
-                responseObserver.onError(Status.UNIMPLEMENTED
-                        .withDescription("Proxy to executor not yet implemented")
-                        .asException());
+                proxyStartJob(target.get(), request, responseObserver);
                 return;
             }
 
@@ -114,11 +115,145 @@ public class SchedulerServiceImpl extends ShellServiceGrpc.ShellServiceImplBase 
         }
     }
 
+    private void proxyStartJob(String targetIp, CommandRequest request,
+                               StreamObserver<JobResponse> responseObserver) {
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(targetIp, EXECUTOR_PORT)
+                .usePlaintext()
+                .build();
+        try {
+            var response = ShellServiceGrpc.newBlockingStub(channel).startJob(request);
+            logger.info("Proxied startJob to {}, jobId={}", targetIp, response.getJobId());
+            responseObserver.onNext(response);
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            logger.error("Failed to proxy startJob to {}", targetIp, e);
+            responseObserver.onError(Status.UNAVAILABLE
+                    .withDescription("Executor at " + targetIp + " is unavailable")
+                    .withCause(e)
+                    .asException());
+        } finally {
+            channel.shutdown();
+        }
+    }
+
     @Override
     public void watchJobLogs(JobIdRequest request, StreamObserver<LogChunk> responseObserver) {
-        responseObserver.onError(Status.UNIMPLEMENTED
-                .withDescription("Not yet implemented")
-                .asException());
+        try {
+            var item = resolveJobItem(request.getJobId());
+            if (item == null) {
+                responseObserver.onError(Status.NOT_FOUND
+                        .withDescription("Job not found: " + request.getJobId())
+                        .asException());
+                return;
+            }
+
+            var jobStateAttr = item.get("JobState");
+            var jobState = jobStateAttr != null ? jobStateAttr.s() : "";
+
+            switch (jobState) {
+                case "COMPLETED" -> {
+                    sendRecentLogs(item, responseObserver);
+                    responseObserver.onCompleted();
+                }
+                case "SYSTEM_ERROR" -> {
+                    sendErrorMessage(item, responseObserver);
+                    responseObserver.onCompleted();
+                }
+                case "RUNNING" -> {
+                    var instanceIdAttr = item.get("InstanceId");
+                    if (instanceIdAttr == null) {
+                        responseObserver.onError(Status.FAILED_PRECONDITION
+                                .withDescription("Job has no assigned instance")
+                                .asException());
+                        return;
+                    }
+                    String ip;
+                    try {
+                        ip = registry.resolveIp(instanceIdAttr.s());
+                    } catch (Exception e) {
+                        logger.warn("Instance {} is no longer reachable", instanceIdAttr.s(), e);
+                        responseObserver.onError(Status.UNAVAILABLE
+                                .withDescription("Executor instance is no longer reachable")
+                                .withCause(e)
+                                .asException());
+                        return;
+                    }
+                    var executorJobId = item.get("JobId").s();
+                    proxyWatchJobLogs(ip, executorJobId, responseObserver);
+                }
+                default -> responseObserver.onError(Status.FAILED_PRECONDITION
+                        .withDescription("Job is not running yet (state: " + jobState + ")")
+                        .asException());
+            }
+        } catch (Exception e) {
+            logger.error("Failed to watch job logs for {}", request.getJobId(), e);
+            responseObserver.onError(Status.INTERNAL
+                    .withDescription("Failed to watch job logs: " + e.getMessage())
+                    .asException());
+        }
+    }
+
+    private void sendRecentLogs(Map<String, AttributeValue> item,
+                                StreamObserver<LogChunk> responseObserver) {
+        var result = item.get("Result");
+        if (result == null) return;
+        var completed = result.m().get("Completed");
+        if (completed == null) return;
+        var recentLogs = completed.m().get("RecentLogs");
+        if (recentLogs == null) return;
+
+        var logs = new StringBuilder();
+        for (var log : recentLogs.l()) {
+            if (!logs.isEmpty()) logs.append("\n");
+            logs.append(log.s());
+        }
+        if (!logs.isEmpty()) {
+            responseObserver.onNext(LogChunk.newBuilder().setContent(logs.toString()).build());
+        }
+    }
+
+    private void sendErrorMessage(Map<String, AttributeValue> item,
+                                  StreamObserver<LogChunk> responseObserver) {
+        var result = item.get("Result");
+        if (result == null) return;
+        var error = result.m().get("SystemError");
+        if (error == null) return;
+
+        var message = error.m().get("Message");
+        if (message != null) {
+            responseObserver.onNext(LogChunk.newBuilder().setContent(message.s()).build());
+        }
+    }
+
+    private void proxyWatchJobLogs(String targetIp, String executorJobId,
+                                   StreamObserver<LogChunk> responseObserver) {
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(targetIp, EXECUTOR_PORT)
+                .usePlaintext()
+                .build();
+
+        var proxyRequest = JobIdRequest.newBuilder().setJobId(executorJobId).build();
+        ShellServiceGrpc.newStub(channel).watchJobLogs(proxyRequest, new StreamObserver<>() {
+            @Override
+            public void onNext(LogChunk chunk) {
+                responseObserver.onNext(chunk);
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                logger.error("Log stream from {} failed for job {}", targetIp, executorJobId, t);
+                responseObserver.onError(Status.UNAVAILABLE
+                        .withDescription("Log stream from executor failed")
+                        .withCause(t)
+                        .asException());
+                channel.shutdown();
+            }
+
+            @Override
+            public void onCompleted() {
+                responseObserver.onCompleted();
+                channel.shutdown();
+            }
+        });
     }
 
     Map<String, AttributeValue> resolveJobItem(String jobId) {
