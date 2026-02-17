@@ -24,6 +24,7 @@ class DynamoDbStatePersisterTest {
 
         assertEquals("job-1", item.get("JobId").s());
         assertEquals("i-abc123", item.get("InstanceId").s());
+        assertEquals("RUNNING", item.get("JobState").s());
         assertNotNull(item.get("UpdatedAt").n());
 
         var result = item.get("Result").m();
@@ -43,6 +44,7 @@ class DynamoDbStatePersisterTest {
                 .build();
 
         var item = persister.toItem("job-2", status);
+        assertEquals("COMPLETED", item.get("JobState").s());
         var completed = item.get("Result").m().get("Completed").m();
 
         assertEquals("42", completed.get("ExitCode").n());
@@ -62,6 +64,7 @@ class DynamoDbStatePersisterTest {
                 .build();
 
         var item = persister.toItem("job-3", status);
+        assertEquals("SYSTEM_ERROR", item.get("JobState").s());
         var error = item.get("Result").m().get("SystemError").m();
 
         assertEquals("SYSTEM_ERROR", error.get("Reason").s());

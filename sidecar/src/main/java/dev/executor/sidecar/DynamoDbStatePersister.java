@@ -37,9 +37,19 @@ public class DynamoDbStatePersister implements JobEventListener {
         var item = new HashMap<String, AttributeValue>();
         item.put("JobId", AttributeValue.fromS(jobId));
         item.put("InstanceId", AttributeValue.fromS(instanceId));
+        item.put("JobState", AttributeValue.fromS(jobStateName(status)));
         item.put("UpdatedAt", AttributeValue.fromN(String.valueOf(Instant.now().getEpochSecond())));
         item.put("Result", AttributeValue.fromM(mapResult(status)));
         return item;
+    }
+
+    private String jobStateName(JobStatus status) {
+        return switch (status.getResultCase()) {
+            case RUNNING -> "RUNNING";
+            case COMPLETED -> "COMPLETED";
+            case SYSTEM_ERROR -> "SYSTEM_ERROR";
+            default -> "UNKNOWN";
+        };
     }
 
     private Map<String, AttributeValue> mapResult(JobStatus status) {

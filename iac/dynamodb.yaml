@@ -10,9 +10,22 @@ Resources:
       AttributeDefinitions:
         - AttributeName: JobId
           AttributeType: S
+        - AttributeName: InstanceId
+          AttributeType: S
+        - AttributeName: JobState
+          AttributeType: S
       KeySchema:
         - AttributeName: JobId
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ActiveInstancesIndex
+          KeySchema:
+            - AttributeName: InstanceId
+              KeyType: HASH
+            - AttributeName: JobState
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
 
 Outputs:
   JobStateTableArn:
