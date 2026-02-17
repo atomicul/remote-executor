@@ -1,5 +1,6 @@
 package dev.executor.sidecar;
 
+import dev.executor.common.Config;
 import dev.executor.common.JobIdRequest;
 import dev.executor.common.JobStatus;
 import dev.executor.common.ListJobsRequest;
@@ -18,17 +19,17 @@ import org.slf4j.LoggerFactory;
 public class PollingEngine {
 
     private static final Logger logger = LoggerFactory.getLogger(PollingEngine.class);
-    private static final int POLL_INTERVAL_SECONDS = 10;
-    private static final int MAX_CONCURRENT_FETCHES = 5;
 
     private final ShellServiceBlockingStub stub;
+    private final Config config;
     private final ConcurrentHashMap<String, JobStatus> cache = new ConcurrentHashMap<>();
     private final List<JobEventListener> listeners = new CopyOnWriteArrayList<>();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private volatile Instant lastActiveTime = Instant.now();
 
-    public PollingEngine(ShellServiceBlockingStub stub) {
+    public PollingEngine(ShellServiceBlockingStub stub, Config config) {
         this.stub = stub;
+        this.config = config;
     }
 
     public void addListener(JobEventListener listener) {
@@ -36,8 +37,9 @@ public class PollingEngine {
     }
 
     public void start() {
-        logger.info("Polling engine started, interval={}s", POLL_INTERVAL_SECONDS);
-        scheduler.scheduleAtFixedRate(this::poll, 0, POLL_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        int interval = pollIntervalSeconds();
+        logger.info("Polling engine started, interval={}s", interval);
+        scheduler.schedule(this::pollAndReschedule, interval, TimeUnit.SECONDS);
     }
 
     public void shutdown() {
@@ -54,6 +56,13 @@ public class PollingEngine {
         return cache;
     }
 
+    private void pollAndReschedule() {
+        poll();
+        if (!scheduler.isShutdown()) {
+            scheduler.schedule(this::pollAndReschedule, pollIntervalSeconds(), TimeUnit.SECONDS);
+        }
+    }
+
     void poll() {
         try {
             List<String> jobIds = discover();
@@ -67,6 +76,14 @@ public class PollingEngine {
         } catch (Exception e) {
             logger.error("Polling cycle failed", e);
         }
+    }
+
+    private int pollIntervalSeconds() {
+        return config.getInt("poll-interval", 10);
+    }
+
+    private int maxConcurrentFetches() {
+        return config.getInt("max-concurrent-fetches", 5);
     }
 
     private List<String> discover() {
@@ -89,7 +106,7 @@ public class PollingEngine {
     }
 
     private void fetchAndUpdate(List<String> jobIds) {
-        var semaphore = new Semaphore(MAX_CONCURRENT_FETCHES);
+        var semaphore = new Semaphore(maxConcurrentFetches());
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             for (String jobId : jobIds) {

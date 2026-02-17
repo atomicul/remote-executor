@@ -34,6 +34,14 @@ Resources:
                 Action:
                   - dynamodb:PutItem
                 Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/RemoteExecutor-JobState'
+        - PolicyName: SidecarSsmConfig
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/remote-executor/sidecar/*'
 
   ExecutorInstanceProfile:
     Type: AWS::IAM::InstanceProfile

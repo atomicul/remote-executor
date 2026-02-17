@@ -1,8 +1,10 @@
 package dev.executor.sidecar;
 
+import dev.executor.common.Config;
 import dev.executor.common.ShellServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -16,6 +18,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 public class Main implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
+    private static final String SSM_PREFIX = "/remote-executor/sidecar/";
 
     @Option(names = "--dry-run", description = "Skip AWS API calls, log state changes to stdout")
     private boolean dryRun;
@@ -32,12 +35,14 @@ public class Main implements Runnable {
         String mode = dryRun ? "Dry Run" : "Production";
         logger.info("Sidecar starting in {} mode, target={}, service={}", mode, target, service);
 
+        Config config = dryRun ? new Config(Map.of()) : new Config(SSM_PREFIX);
+
         ManagedChannel channel = ManagedChannelBuilder.forTarget(target)
                 .usePlaintext()
                 .build();
 
         var stub = ShellServiceGrpc.newBlockingStub(channel);
-        var engine = new PollingEngine(stub);
+        var engine = new PollingEngine(stub, config);
         engine.addListener(new LoggingSubscriber());
 
         if (!dryRun) {
@@ -53,6 +58,7 @@ public class Main implements Runnable {
             logger.info("Shutting down sidecar");
             engine.shutdown();
             channel.shutdown();
+            config.close();
         }));
 
         engine.start();
