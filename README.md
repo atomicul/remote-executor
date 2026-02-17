@@ -6,43 +6,41 @@ scheduling, fleet management, and auto-scaling transparently.
 
 ## Architecture
 
-```
-                          ┌──────────────────────────────────────────────────┐
-                          │                  AWS Cloud                      │
-                          │                                                 │
-┌────────┐   gRPC    ┌────┴─────┐  DynamoDB   ┌──────────────────────────┐  │
-│ Client ├──────────►│Scheduler ├────────────►│  RemoteExecutor-JobState │  │
-└────────┘           └──┬───┬───┘             └──────────────────────────┘  │
-                        │   │                       ▲                       │
-               Direct   │   │ SNS                   │  PutItem             │
-               proxy    │   │ (fleet full)           │                      │
-                        │   │                        │                      │
-                        │   ▼                        │                      │
-                        │  ┌─────────────┐           │                      │
-                        │  │ Provisioner │           │                      │
-                        │  │  (Lambda)   │           │                      │
-                        │  └──────┬──────┘           │                      │
-                        │         │ SQS (120s delay) │                      │
-                        │         ▼                  │                      │
-                        │  ┌─────────────┐           │                      │
-                        │  │  Submitter  │──────┐    │                      │
-                        │  │  (Lambda)   │      │    │                      │
-                        │  └─────────────┘      │    │                      │
-                        │                       │    │                      │
-                        ▼          gRPC         ▼    │                      │
-              ┌─────────────────────────────────┐    │                      │
-              │         EC2 Instance            │    │                      │
-              │  ┌──────────┐  ┌─────────────┐  │    │                      │
-              │  │ Executor │◄─┤   Sidecar   ├──┘    │                      │
-              │  │ (gRPC)   │  │ (polls jobs)│───────┘                      │
-              │  └────┬─────┘  └─────────────┘  │                           │
-              │       │ Docker                  │                           │
-              │       ▼                         │                           │
-              │  ┌──────────┐                   │                           │
-              │  │Container │                   │                           │
-              │  └──────────┘                   │                           │
-              └─────────────────────────────────┘                           │
-              └─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client([Client])
+
+    subgraph AWS
+        Scheduler[Scheduler]
+        DynamoDB[(RemoteExecutor-JobState)]
+
+        subgraph Scale-Out Path
+            SNS[SNS Topic]
+            Provisioner[Provisioner Lambda]
+            SQS[SQS Queue<br/>120s delay]
+            Submitter[Submitter Lambda]
+        end
+
+        subgraph EC2 Instance
+            Executor[Executor gRPC]
+            Sidecar[Sidecar]
+            Container[Docker Container]
+        end
+    end
+
+    Client -- gRPC --> Scheduler
+    Scheduler -- read/write --> DynamoDB
+    Scheduler -- direct proxy --> Executor
+    Scheduler -- publish<br/>fleet full --> SNS
+    SNS --> Provisioner
+    Provisioner -- update state --> DynamoDB
+    Provisioner --> SQS
+    SQS --> Submitter
+    Submitter -- gRPC StartJob --> Executor
+    Submitter -- write ExecutorJobId --> DynamoDB
+    Sidecar -- localhost gRPC poll --> Executor
+    Sidecar -- PutItem --> DynamoDB
+    Executor -- run --> Container
 ```
 
 ### Modules
