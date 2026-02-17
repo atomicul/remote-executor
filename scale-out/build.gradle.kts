@@ -1,3 +1,9 @@
+tasks.jar {
+    dependsOn(configurations.runtimeClasspath)
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from({ configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) } })
+}
+
 dependencies {
     implementation(project(":common"))
     implementation("io.grpc:grpc-netty-shaded:1.69.0")
