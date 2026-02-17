@@ -97,15 +97,15 @@ Resources:
               - name: DownloadAppArchive
                 action: S3Download
                 inputs:
-                  - source: s3://${ArtifactBucket}/remote-executor/server.tar
-                    destination: /opt/server.tar
+                  - source: s3://${ArtifactBucket}/remote-executor/executor.tar
+                    destination: /opt/executor.tar
               - name: ExtractApp
                 action: ExecuteBash
                 inputs:
                   commands:
                     - cd /opt
-                    - tar -xvf server.tar
-                    - chmod +x /opt/server/bin/server
+                    - tar -xvf executor.tar
+                    - chmod +x /opt/executor/bin/executor
               - name: ConfigureSystemd
                 action: ExecuteBash
                 inputs:
@@ -118,7 +118,7 @@ Resources:
                       Requires=docker.service
 
                       [Service]
-                      ExecStart=/opt/server/bin/server
+                      ExecStart=/opt/executor/bin/executor
                       StandardOutput=append:/var/log/remote-executor.log
                       StandardError=append:/var/log/remote-executor.log
                       Restart=always
@@ -142,7 +142,7 @@ Resources:
                               "collect_list": [
                                 {
                                   "file_path": "/var/log/remote-executor.log",
-                                  "log_group_name": "/remote-executor/server",
+                                  "log_group_name": "/remote-executor/executor",
                                   "log_stream_name": "{instance_id}"
                                 }
                               ]
@@ -389,7 +389,7 @@ Resources:
             Value: !Ref ImagePipeline 
       Source:
         Type: CODEPIPELINE
-        BuildSpec: server/buildspec.yml
+        BuildSpec: executor/buildspec.yml
 
   SidecarCodeBuildProject:
     Type: AWS::CodeBuild::Project

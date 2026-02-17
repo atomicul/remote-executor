@@ -6,13 +6,13 @@ phases:
       java: corretto21
   build:
     commands:
-      - echo "Building the Remote Executor server distribution..."
+      - echo "Building the Remote Executor distribution..."
       - chmod +x ./gradlew
-      - ./gradlew :server:distTar
+      - ./gradlew :executor:distTar
   post_build:
     commands:
       - echo "Uploading artifact to the environment-specific S3 Bucket..."
-      - aws s3 cp server/build/distributions/server.tar s3://$ARTIFACT_BUCKET/remote-executor/server.tar
+      - aws s3 cp executor/build/distributions/executor.tar s3://$ARTIFACT_BUCKET/remote-executor/executor.tar
 
       - echo "Triggering EC2 Image Builder Pipeline..."
       - aws imagebuilder start-image-pipeline-execution --image-pipeline-arn $PIPELINE_ARN
