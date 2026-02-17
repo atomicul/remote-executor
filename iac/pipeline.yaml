@@ -12,6 +12,12 @@ Parameters:
   CodeStarConnectionArn:
     Type: String
     Description: The ARN of the AWS CodeStar Connection to your Git provider.
+  ImageVersion:
+    Type: String
+    Default: '1.1.0'
+    Description: >-
+      Semantic version for Image Builder components and recipes.
+      Must be bumped on every template update because these resources are immutable.
 
 Resources:
   # ---------------------------------------------------------
@@ -67,10 +73,11 @@ Resources:
 
   ImageBuilderComponent:
     Type: AWS::ImageBuilder::Component
+    UpdateReplacePolicy: Retain
     Properties:
       Name: remote-executor-setup
       Platform: Linux
-      Version: '1.1.0'
+      Version: !Ref ImageVersion
       # The component YAML is embedded directly as a string here!
       Data: !Sub |
         name: RemoteExecutorSetup
@@ -125,7 +132,7 @@ Resources:
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - dnf install -y amazon-cloudwatch-agent
+                    - dnf install -y amazon-cloudwatch-agent jq
                     - |
                       cat << 'EOF' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
                       {
@@ -144,13 +151,15 @@ Resources:
                         }
                       }
                       EOF
+                    - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
                     - systemctl enable amazon-cloudwatch-agent
 
   ImageBuilderRecipe:
     Type: AWS::ImageBuilder::ImageRecipe
+    UpdateReplacePolicy: Retain
     Properties:
       Name: remote-executor-recipe
-      Version: '1.1.0'
+      Version: !Ref ImageVersion
       # Automatically pulls the latest Amazon Linux 2023 provided by AWS
       ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2023-x86/x.x.x'
       Components:
@@ -168,10 +177,11 @@ Resources:
   # ---------------------------------------------------------
   SidecarImageBuilderComponent:
     Type: AWS::ImageBuilder::Component
+    UpdateReplacePolicy: Retain
     Properties:
       Name: remote-executor-sidecar-setup
       Platform: Linux
-      Version: '1.1.0'
+      Version: !Ref ImageVersion
       Data: !Sub |
         name: RemoteExecutorSidecarSetup
         description: Installs the Remote Executor Sidecar and its systemd unit
@@ -235,15 +245,32 @@ Resources:
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - CW_CONFIG=/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-                    - jq '.logs.logs_collected.files.collect_list += [{"file_path":"/var/log/remote-executor-sidecar.log","log_group_name":"/remote-executor/sidecar","log_stream_name":"{instance_id}"}]' "$CW_CONFIG" > "$CW_CONFIG.tmp"
-                    - mv "$CW_CONFIG.tmp" "$CW_CONFIG"
+                    - |
+                      cat << 'CWEOF' > /opt/aws/amazon-cloudwatch-agent/etc/sidecar-cloudwatch.json
+                      {
+                        "logs": {
+                          "logs_collected": {
+                            "files": {
+                              "collect_list": [
+                                {
+                                  "file_path": "/var/log/remote-executor-sidecar.log",
+                                  "log_group_name": "/remote-executor/sidecar",
+                                  "log_stream_name": "{instance_id}"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                      CWEOF
+                      /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a append-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/sidecar-cloudwatch.json
 
   SidecarImageBuilderRecipe:
     Type: AWS::ImageBuilder::ImageRecipe
+    UpdateReplacePolicy: Retain
     Properties:
       Name: remote-executor-sidecar-recipe
-      Version: '1.1.0'
+      Version: !Ref ImageVersion
       ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image/remote-executor-recipe/x.x.x'
       Components:
         - ComponentArn: !GetAtt SidecarImageBuilderComponent.Arn

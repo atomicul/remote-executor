@@ -26,7 +26,25 @@ deploy_pipeline() {
     fi
 
     local stack_name="remote-executor-pipeline"
-    echo "Deploying stack: $stack_name"
+
+    local current_version
+    current_version=$(aws imagebuilder list-components \
+        --owner Self \
+        --filters "name=name,values=remote-executor-setup" \
+        --region "$REGION" \
+        --query 'componentVersionList[].version' \
+        --output text 2>/dev/null \
+        | tr '\t' '\n' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1) || true
+
+    if [ -z "$current_version" ]; then
+        current_version="0.0.0"
+    fi
+
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$current_version"
+    local next_version="${major}.${minor}.$((patch + 1))"
+
+    echo "Deploying stack: $stack_name (ImageVersion: $current_version → $next_version)"
 
     aws cloudformation deploy \
       --region "$REGION" \
@@ -38,7 +56,8 @@ deploy_pipeline() {
       --parameter-overrides \
           RepositoryName="atomicul/remote-executor" \
           BranchName="main" \
-          CodeStarConnectionArn="$CODESTAR_ARN"
+          CodeStarConnectionArn="$CODESTAR_ARN" \
+          ImageVersion="$next_version"
 
     echo "✅ Stack $stack_name deployed."
 }
