@@ -10,6 +10,14 @@ Parameters:
     Type: String
     Description: S3 key for the scale-out Lambda JAR
 
+  ProvisionerVersion:
+    Type: String
+    Description: Published version of the provisioner Lambda to point the live alias at
+
+  SubmitterVersion:
+    Type: String
+    Description: Published version of the submitter Lambda to point the live alias at
+
 Resources:
   ScaleOutTopic:
     Type: AWS::SNS::Topic
@@ -95,6 +103,13 @@ Resources:
         Variables:
           SQS_QUEUE_URL: !Ref SubmitQueue
 
+  ProvisionerAlias:
+    Type: AWS::Lambda::Alias
+    Properties:
+      FunctionName: !Ref ProvisionerFunction
+      FunctionVersion: !Ref ProvisionerVersion
+      Name: live
+
   SubmitterFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -108,17 +123,24 @@ Resources:
         S3Bucket: !Ref LambdaCodeBucket
         S3Key: !Ref LambdaCodeKey
 
+  SubmitterAlias:
+    Type: AWS::Lambda::Alias
+    Properties:
+      FunctionName: !Ref SubmitterFunction
+      FunctionVersion: !Ref SubmitterVersion
+      Name: live
+
   ProvisionerSnsSubscription:
     Type: AWS::SNS::Subscription
     Properties:
       Protocol: lambda
       TopicArn: !Ref ScaleOutTopic
-      Endpoint: !GetAtt ProvisionerFunction.Arn
+      Endpoint: !Ref ProvisionerAlias
 
   ProvisionerSnsPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref ProvisionerFunction
+      FunctionName: !Ref ProvisionerAlias
       Action: lambda:InvokeFunction
       Principal: sns.amazonaws.com
       SourceArn: !Ref ScaleOutTopic
@@ -127,7 +149,7 @@ Resources:
     Type: AWS::Lambda::EventSourceMapping
     Properties:
       EventSourceArn: !GetAtt SubmitQueue.Arn
-      FunctionName: !Ref SubmitterFunction
+      FunctionName: !Ref SubmitterAlias
       BatchSize: 1
 
 Outputs:

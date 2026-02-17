@@ -78,6 +78,12 @@ deploy_executor() {
 }
 
 deploy_scheduler() {
+    if [ -z "${PROVISIONER_VERSION:-}" ] || [ -z "${SUBMITTER_VERSION:-}" ]; then
+        echo "❌ Error: PROVISIONER_VERSION and SUBMITTER_VERSION environment variables must be set."
+        echo "Example: export PROVISIONER_VERSION=1 SUBMITTER_VERSION=1"
+        exit 1
+    fi
+
     local stack_name="remote-executor-scheduler"
     echo "Deploying stack: $stack_name"
 
@@ -91,6 +97,8 @@ deploy_scheduler() {
       --parameter-overrides \
           LambdaCodeBucket="${LAMBDA_CODE_BUCKET:?LAMBDA_CODE_BUCKET env var required}" \
           LambdaCodeKey="${LAMBDA_CODE_KEY:?LAMBDA_CODE_KEY env var required}"
+          ProvisionerVersion="$PROVISIONER_VERSION" \
+          SubmitterVersion="$SUBMITTER_VERSION"
 
     echo "✅ Stack $stack_name deployed."
 }
